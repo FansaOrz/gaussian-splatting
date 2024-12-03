@@ -40,8 +40,12 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
+        # 场景数据加载
+        # 加载colmap格式的数据，（有sparse文件夹）
         if os.path.exists(os.path.join(args.source_path, "sparse")):
+            # TODO: 看下这个函数
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
+        # 加载blender格式的数据，（有transforms_train.json文件）
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.depths, args.eval)
@@ -49,8 +53,10 @@ class Scene:
             assert False, "Could not recognize scene type!"
 
         if not self.loaded_iter:
+            # 将初始的点云文件复制到目标路径下
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
+            # 将相机参数写入json文件
             json_cams = []
             camlist = []
             if scene_info.test_cameras:
@@ -62,10 +68,13 @@ class Scene:
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
                 json.dump(json_cams, file)
 
+        # 随机打乱训练和测试摄像机的顺序，确保训练过程中数据的多样性
         if shuffle:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
+        # 场景归一化的半径
+        # TODO: 这个半径是怎么算出来的
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         for resolution_scale in resolution_scales:
@@ -75,11 +84,13 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
 
         if self.loaded_iter:
+            # 加载指定迭代次数的点云文件
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"), args.train_test_exp)
         else:
+            # 从点云文件中创建高斯模型
             self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
 
     def save(self, iteration):

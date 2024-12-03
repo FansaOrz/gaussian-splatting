@@ -46,13 +46,20 @@ class ParamGroup:
 
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
+        # spherical harmonics degree 球谐函数的阶数
+        # 阶数越高，能表达的细节越多，但计算量也越大
         self.sh_degree = 3
         self._source_path = ""
+        # 模型保存路径
         self._model_path = ""
         self._images = "images"
+        # 深度图的路径
         self._depths = ""
+        # 指定输入图像的分辨率，如果为-1，则使用原始图像的分辨率
         self._resolution = -1
         self._white_background = False
+        # 控制训练集和测试集的划分方式。
+        # True, 训练和测试集可能共用某些相机；False, 严格按照is_test区分
         self.train_test_exp = False
         self.data_device = "cuda"
         self.eval = False

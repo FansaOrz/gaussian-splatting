@@ -29,21 +29,31 @@ except:
 
 class GaussianModel:
 
+    # 设置激活函数
     def setup_functions(self):
+        # 把缩放和旋转映射到协方差矩阵的函数
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
             return symm
         
+        # 激活函数配置
+        # 激活函数用于将模型参数映射到物理意义范围内
+        # 缩放激活，用指数函数确保缩放参数为正值
         self.scaling_activation = torch.exp
+        # 缩放反激活，用于从缩放参数的激活值反推到未激活值，便于优化时计算梯度
         self.scaling_inverse_activation = torch.log
 
+        # 这里并不是调用这个函数，而是把这个函数的定义放在这里，以便于在其他地方调用，相当于函数引用
         self.covariance_activation = build_covariance_from_scaling_rotation
 
+        # 透明度激活，用sigmoid函数确保透明度参数为0-1范围内
         self.opacity_activation = torch.sigmoid
+        # 透明度反激活，用于从透明度参数的激活值反推到未激活值，便于优化时计算梯度
         self.inverse_opacity_activation = inverse_sigmoid
 
+        # 旋转激活，将旋转参数归一化
         self.rotation_activation = torch.nn.functional.normalize
 
 

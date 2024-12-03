@@ -76,6 +76,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
         sys.stdout.flush()
 
+        # 读取每个相机的内外参
         extr = cam_extrinsics[key]
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
@@ -85,6 +86,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
 
+        # 解析焦距和视野
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
@@ -97,6 +99,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
+        # 如果提供了深度参数，尝试获取当前图像对应的深度参数
         n_remove = len(extr.name.split('.')[-1]) + 1
         depth_params = None
         if depths_params is not None:
@@ -143,6 +146,7 @@ def storePly(path, xyz, rgb):
     ply_data.write(path)
 
 def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
+    # 读取相机内外参
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -154,6 +158,10 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+    # 作用：确保深度数据在训练和渲染中保持一致的尺度
+    # med_scale有主意场景深度值的归一化
+    
+    # 检查场景是否包含深度参数文件
     depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
     ## if depth_params_file isnt there AND depths file is here -> throw error
     depths_params = None
@@ -162,6 +170,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             with open(depth_params_file, "r") as f:
                 depths_params = json.load(f)
             all_scales = np.array([depths_params[key]["scale"] for key in depths_params])
+            # 提取深度缩放因子的中位数，记为med_scale
             if (all_scales > 0).sum():
                 med_scale = np.median(all_scales[all_scales > 0])
             else:
@@ -176,9 +185,11 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
             sys.exit(1)
 
+    # 如果是验证模式
     if eval:
         if "360" in path:
             llffhold = 8
+        # 每8个相机选一个测试集
         if llffhold:
             print("------------LLFF HOLD-------------")
             cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]
@@ -187,24 +198,33 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         else:
             with open(os.path.join(path, "sparse/0", "test.txt"), 'r') as file:
                 test_cam_names_list = [line.strip() for line in file]
+    # 训练模式，所有相机作为训练集
     else:
         test_cam_names_list = []
 
     reading_dir = "images" if images == None else images
+    # TODO: 看下这个函数
     cam_infos_unsorted = readColmapCameras(
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
         images_folder=os.path.join(path, reading_dir), 
         depths_folder=os.path.join(path, depths) if depths != "" else "", test_cam_names_list=test_cam_names_list)
+    # 按照图像名称给相机排序
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
+    # 划分训练集和测试机
+    # 如果train_test_exp为真，所有相机都是训练集，否则根据is_test属性划分
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
     test_cam_infos = [c for c in cam_infos if c.is_test]
 
+    # 计算nerf归一化参数，用于对场景进行归一化
+    # 作用：将训练相机和点云的位置统一映射到标准范围，便于数值稳定性和训练效率
+    # TODO: 看下这个函数
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "sparse/0/points3D.ply")
     bin_path = os.path.join(path, "sparse/0/points3D.bin")
     txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    # 加载并转成ply格式的点云文件
     if not os.path.exists(ply_path):
         print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
         try:
