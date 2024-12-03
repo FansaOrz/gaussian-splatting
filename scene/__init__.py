@@ -43,7 +43,6 @@ class Scene:
         # 场景数据加载
         # 加载colmap格式的数据，（有sparse文件夹）
         if os.path.exists(os.path.join(args.source_path, "sparse")):
-            # TODO: 看下这个函数
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
         # 加载blender格式的数据，（有transforms_train.json文件）
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
@@ -74,7 +73,6 @@ class Scene:
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
         # 场景归一化的半径
-        # TODO: 这个半径是怎么算出来的
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         for resolution_scale in resolution_scales:

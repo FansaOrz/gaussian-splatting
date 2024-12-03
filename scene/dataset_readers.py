@@ -45,6 +45,11 @@ class SceneInfo(NamedTuple):
     ply_path: str
     is_nerf_synthetic: bool
 
+'''
+该函数的目的是计算一组相机的归一化参数。
+通过计算这些相机的空间分布，确定场景的中心和尺度，并计算出一个平移量 (translate) 和一个半径 (radius)。
+这些归一化参数可以用于后续的场景重建或渲染任务，例如在 NeRF 中，通常需要统一的坐标系和尺度来训练网络并渲染场景。
+'''
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
@@ -56,14 +61,18 @@ def getNerfppNorm(cam_info):
 
     cam_centers = []
 
+    # 计算所有相机位姿的中心位置
     for cam in cam_info:
         W2C = getWorld2View2(cam.R, cam.T)
         C2W = np.linalg.inv(W2C)
         cam_centers.append(C2W[:3, 3:4])
 
+    # 计算相机位置到该中心的最大距离
     center, diagonal = get_center_and_diag(cam_centers)
     radius = diagonal * 1.1
 
+    # 计算 translate（平移量），它表示将场景移动到原点（即将中心平移到坐标原点）
+    # 所以这里的平移量是 center 的负值。
     translate = -center
 
     return {"translate": translate, "radius": radius}
@@ -203,7 +212,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         test_cam_names_list = []
 
     reading_dir = "images" if images == None else images
-    # TODO: 看下这个函数
+    # 从外参和内参中读取相机信息，并放在相机类里
     cam_infos_unsorted = readColmapCameras(
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
         images_folder=os.path.join(path, reading_dir), 
@@ -218,7 +227,6 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
 
     # 计算nerf归一化参数，用于对场景进行归一化
     # 作用：将训练相机和点云的位置统一映射到标准范围，便于数值稳定性和训练效率
-    # TODO: 看下这个函数
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "sparse/0/points3D.ply")
