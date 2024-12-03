@@ -22,11 +22,14 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+# 尝试导入 Tensorboard，如果不可用则记录标记
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+# 尝试导入加速版 SSIM 模块
 
 try:
     from fused_ssim import fused_ssim
@@ -34,40 +37,49 @@ try:
 except:
     FUSED_SSIM_AVAILABLE = False
 
+# 尝试导入稀疏高斯优化器
 try:
     from diff_gaussian_rasterization import SparseGaussianAdam
     SPARSE_ADAM_AVAILABLE = True
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+# 检查稀疏优化器是否可用
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
-    scene = Scene(dataset, gaussians)
-    gaussians.training_setup(opt)
+    tb_writer = prepare_output_and_logger(dataset) # 准备输出和日志记录器
+    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type) # 初始化高斯模型
+    scene = Scene(dataset, gaussians) # 创建场景
+    gaussians.training_setup(opt) # 配置训练参数
+    # 加载检查点
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
 
+    # 背景颜色初始化
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+    # 初始化计时事件
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
+    # 获取训练摄像机栈
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
+    # 指数移动平均损失和深度损失
+    # TODO: 这两个是什么意思？
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
+    # 进度条
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):
@@ -75,9 +87,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             network_gui.try_connect()
         while network_gui.conn != None:
             try:
+                # 接收和发送GUI数据
                 net_image_bytes = None
                 custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                 if custom_cam != None:
+                    # 渲染图像
                     net_image = render(custom_cam, gaussians, pipe, background, scaling_modifier=scaling_modifer, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)["render"]
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 network_gui.send(net_image_bytes, dataset.source_path)
@@ -86,11 +100,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             except Exception as e:
                 network_gui.conn = None
 
+        # 开始计时
         iter_start.record()
 
+        # 更新学习率
         gaussians.update_learning_rate(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
+        # 每 1000 次迭代增加一次 SH 阶数，直到达到最大值
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
@@ -98,7 +115,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
+        # 随机生成一个范围在 0 到 len(viewpoint_indices) - 1 之间的索引，表示即将从列表中弹出的相机位置。
         rand_idx = randint(0, len(viewpoint_indices) - 1)
+        # 从 viewpoint_stack 中弹出索引为 rand_idx 的相机对象
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
         vind = viewpoint_indices.pop(rand_idx)
 
@@ -106,26 +125,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
+        # 如果用随机的backgroun，就随机生成一个背景颜色，否则就使用前面的固定背景颜色
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
+        # 应用透明度掩码
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
         # Loss
+        # gt图像
         gt_image = viewpoint_cam.original_image.cuda()
+        # L1损失
         Ll1 = l1_loss(image, gt_image)
+        # 加速版SSIM
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
+            # 标准SSIM
             ssim_value = ssim(image, gt_image)
 
+        # 最终的损失函数
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
         # Depth regularization
+        # TODO: 深度正则化？？
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
             invDepth = render_pkg["depth"]
@@ -139,8 +166,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             Ll1depth = 0
 
+        # 反向传播
         loss.backward()
 
+        # 结束计时
         iter_end.record()
 
         with torch.no_grad():
