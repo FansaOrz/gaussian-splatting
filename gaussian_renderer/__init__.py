@@ -91,10 +91,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             # 将 SHs 转换为 RGB 颜色值
             # get_features是一个包含球谐系数的张量，代表每个点的SH系数。形状通常为（N, C, (deg + 1)^2）
             # transpose(1, 2)：将张量的第二维和第三维交换位置，即将形状从 (N, C, (deg + 1)^2) 转换为 (N, (deg + 1)^2, C)。
-
-            
+            # .view(-1, 3, (pc.max_sh_degree+1)**2):重塑张量，其中-1表示该维度的大小将自动计算以匹配总元素数量。
+            # .view是pytorch中修改张量形状的方法，它可以将一个张量重塑为新的形状。
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
+            # 计算从相机中心到每个点的方向向量
             dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
+            # 对方向向量进行归一化处理
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)

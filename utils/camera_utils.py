@@ -17,9 +17,18 @@ import cv2
 
 WARNED = False
 
+"""
+args: 通常是一个包含命令行参数的对象，这些参数可能包括分辨率、数据设备等设置。
+id: 相机或图像的唯一标识符。
+cam_info: 一个对象，包含有关相机和图像的具体信息，如图像路径、深度路径、旋转矩阵（R）、平移向量（T）、视野角（FovX, FovY）等。
+resolution_scale: 一个用于调整图像分辨率的比例因子。
+is_nerf_synthetic: 一个布尔值，指示深度图是否来自NERF（神经辐射场）合成数据。
+is_test_dataset: 一个布尔值，指示当前数据集是否为测试数据集。
+"""
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
     image = Image.open(cam_info.image_path)
 
+    # 加载深度图
     if cam_info.depth_path != "":
         try:
             if is_nerf_synthetic:
@@ -40,6 +49,8 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
         invdepthmap = None
         
     orig_w, orig_h = image.size
+    # 如果args.resolution是1、2、4或8，则根据resolution_scale和args.resolution计算图像的分辨率。
+    # 如果args.resolution是其他值（如-1或自定义的浮点数），则根据图像的原始宽度和args.resolution（如果为-1，则默认调整为1600像素宽度）计算缩放比例global_down。
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
     else:  # should be a type that converts to float
@@ -56,7 +67,7 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
         else:
             global_down = orig_w / args.resolution
     
-
+        # 使用global_down和resolution_scale计算最终的缩放比例，并根据这个比例计算图像的分辨率。
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 

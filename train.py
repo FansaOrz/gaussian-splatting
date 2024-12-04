@@ -104,8 +104,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_start.record()
 
         # 更新学习率
-        gaussians.update_learning_rate(iteration)
-
+        current_lr = gaussians.update_learning_rate(iteration)
+        print("current lr: ", current_lr)
+        
         # Every 1000 its we increase the levels of SH up to a maximum degree
         # 每 1000 次迭代增加一次 SH 阶数，直到达到最大值
         if iteration % 1000 == 0:
@@ -127,6 +128,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 如果用随机的backgroun，就随机生成一个背景颜色，否则就使用前面的固定背景颜色
         bg = torch.rand((3), device="cuda") if opt.random_background else background
+
+        print("SPARSE_ADAM_AVAILABLE: ", SPARSE_ADAM_AVAILABLE)
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
