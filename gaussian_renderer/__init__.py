@@ -15,6 +15,12 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
+"""
+viewpoint_camera: 当前渲染视角的相机信息，包含了相机的视图和投影矩阵
+pc（高斯模型表示）: 当前渲染的点云模型，包含了点云的位置、颜色、透明度、尺度、旋转等信息
+pipe: 渲染管道，包含了渲染所需的参数和配置信息
+bg_color: 背景颜色，用于渲染背景
+"""
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, separate_sh = False, override_color = None, use_trained_exp=False):
     """
     Render the scene. 
@@ -23,16 +29,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     """
  
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
+    # 存储渲染后点的屏幕空间坐标（2D），并设置为需要计算梯度
+    # 为了让pytorch能够计算这些点的位置相对于相机的梯度，通常用于反向传播训练时的调整
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
+        # 保持 screenspace_points 张量的梯度信息，以便后续计算梯度
+        # TODO: 这里没理解
         screenspace_points.retain_grad()
     except:
         pass
 
     # Set up rasterization configuration
+    # 计算水平和垂直方向的视角角的正切值，用于在渲染过程中进行投影计算
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
+    # 光栅化参数
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -43,12 +55,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         viewmatrix=viewpoint_camera.world_view_transform,
         projmatrix=viewpoint_camera.full_proj_transform,
         sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center,
+        campos=viewpoint_camera.camera_center, # 相机的位置
         prefiltered=False,
         debug=pipe.debug,
         antialiasing=pipe.antialiasing
     )
 
+    # 创建一个 GaussianRasterizer 实例，这个实例负责将 3D 点云数据（使用高斯模型表示）转换为 2D 图像（光栅化过程）
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     means3D = pc.get_xyz
@@ -61,9 +74,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rotations = None
     cov3D_precomp = None
 
+    # 利用旋转和缩放计算 3D 协方差矩阵
     if pipe.compute_cov3D_python:
         cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
+        # 直接拿到原始的缩放和旋转
         scales = pc.get_scaling
         rotations = pc.get_rotation
 
@@ -73,6 +88,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     colors_precomp = None
     if override_color is None:
         if pipe.convert_SHs_python:
+            # 将 SHs 转换为 RGB 颜色值
+            # get_features是一个包含球谐系数的张量，代表每个点的SH系数。形状通常为（N, C, (deg + 1)^2）
+            # transpose(1, 2)：将张量的第二维和第三维交换位置，即将形状从 (N, C, (deg + 1)^2) 转换为 (N, (deg + 1)^2, C)。
+
+            
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
             dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)

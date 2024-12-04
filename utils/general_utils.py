@@ -26,6 +26,18 @@ def PILtoTorch(pil_image, resolution):
     else:
         return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
 
+
+"""
+该函数生成一个逐步衰减的学习率函数，具体使用对数线性插值方式来实现学习率的平滑变化。
+它可以根据训练步数调整学习率，适用于需要逐步调整学习率的情况。
+
+lr_init: 初始学习率。
+lr_final: 最终学习率。
+lr_delay_steps: 如果大于0,学习率会根据一个延迟函数逐步调整。
+lr_delay_mult: 延迟的放大倍数，影响延迟期的学习率。
+max_steps: 最大训练步数，决定了学习率衰减的总步骤。
+
+"""
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
 ):
@@ -56,6 +68,7 @@ def get_expon_lr_func(
         else:
             delay_rate = 1.0
         t = np.clip(step / max_steps, 0, 1)
+        # 使用对数线性插值方式来实现学习率的平滑变化
         log_lerp = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
         return delay_rate * log_lerp
 

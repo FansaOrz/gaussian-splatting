@@ -157,39 +157,79 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
+        # 控制学习率在空间上的缩放
         self.spatial_lr_scale = spatial_lr_scale
+        # 把点云转成numpy再转成tensor，放到GPU上
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        # 颜色转成球谐函数
+        # RGB2SH(x) = (x - 0.5) / 0.28209479177387814
+        # 0.28209479177387814是1 / (2*sqrt(pi))，是直流分量Y(l=0,m=0)的值
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        # 初始化feature，把SH函数放到第一个通道，其他通道全为0
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
+        # 调用simple_knn的distCUDA2函数，计算点云中的每个点到与其最近的K个点的平均距离的平方
+        # dist2的大小应该是(N,)。
+        # 首先可以明确的是这句话用来初始化scale，且scale（的平方）不能低于1e-7。
+        # 我阅读了一下submodules/simple-knn/simple_knn.cu，大致猜出来了这个是什么意思。
+        # distCUDA2函数由simple_knn.cu的SimpleKNN::knn函数实现。
+        # KNN意思是K-Nearest Neighbor，即求每一点最近的K个点。
+        # simple_knn.cu中令k=3，求得每一点最近的三个点距该点的平均距离。
+        # 原理是把3D空间中的每个点用莫顿编码（Morton Encoding）转化为一个1D坐标
+        # 用到了能够填满空间的Z曲线
+        # 然后对1D坐标进行排序，从而确定离每个点最近的三个点。
+        # simple_knn.cu实际上还用了一种加速策略，是将点集分为多个大小为1024的块（box），
+
+        # torch.clamp_min(*, 0.00001)表示把距离平方小于0.00001的距离设为0.00001，防止除0错误
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # 对每个点，计算dist2的平方根并取对数，这个值通常表示该点的尺度（或大小）
+        # .repeat(1, 3)表示扩展其维度，使每个点生成一个包含相同尺度值的3D向量
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        # 为每个点初始化单位旋转（四元数表示）
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
+        # 初始化每个点的透明度为0.1
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
+        # 初始化模型参数
+        # nn.Parameter表示将这些张量包装为pytorch的可训练参数，并且他们的梯度可以自动计算
+        # 这里的requires_grad=True表示这些参数需要计算梯度，便于模型训练时更新
+        # 点云的空间坐标（或者是每个椭球的中心）
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
+        # 点云的颜色特征
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+        # 除了颜色特征外的其他特征
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        # 每个椭球的缩放信息
         self._scaling = nn.Parameter(scales.requires_grad_(True))
+        # 每个椭球的旋转信息
         self._rotation = nn.Parameter(rots.requires_grad_(True))
+        # 每个椭球的透明度信息
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        # 二维空间中每个点的最大半径
+        # TODO: 用在什么地方？
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        # 存储相机name到索引的映射
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
+        # 初始化曝光参数，这里用单位矩阵初始化
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
         self._exposure = nn.Parameter(exposure.requires_grad_(True))
 
     def training_setup(self, training_args):
+        # 设置训练中稠密度的参数，通常与点云稠密度、场细节有关。默认0.01
+        # TODO: 这里的稠密度参数是什么意思？
         self.percent_dense = training_args.percent_dense
+        # 累积梯度，通常与梯度计算和更新策略有关。可能用于处理梯度累积或者避免在某些点上出现梯度更新问题
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
+        # 定义训练参数，以及对应好的学习率
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
@@ -199,6 +239,8 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
 
+        # 定义优化器
+        # TODO: adam和sparse_adam的区别？
         if self.optimizer_type == "default":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         elif self.optimizer_type == "sparse_adam":
@@ -208,8 +250,12 @@ class GaussianModel:
                 # A special version of the rasterizer is required to enable sparse adam
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
+        # 曝光参数的优化器
         self.exposure_optimizer = torch.optim.Adam([self._exposure])
 
+        # xyz学习率的调度器
+        # 返回一个连续的学习率衰减函数，用于 xyz 参数的学习率调整
+        # 学习率从 lr_init 到 lr_final，通过对数线性插值进行平滑衰减。lr_delay_steps 和 lr_delay_mult 使得学习率衰减更具平滑性
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
