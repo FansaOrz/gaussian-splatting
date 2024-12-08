@@ -11,6 +11,7 @@
 
 import os
 import torch
+from torchvision import utils as vutils
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -44,8 +45,11 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+def save_tensor2image(input_tensor : torch.Tensor, filename):
+    vutils.save_image(input_tensor, filename)
+
 # 检查稀疏优化器是否可用
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_image : bool):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
@@ -113,9 +117,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
+        # 每一次迭代，都重新随机选一个相机视角做训练
+        # TODO: 为什么不是每次都用所有相机做训练？
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
+        print("len(viewpoint_indices)", len(viewpoint_indices))
         # 随机生成一个范围在 0 到 len(viewpoint_indices) - 1 之间的索引，表示即将从列表中弹出的相机位置。
         rand_idx = randint(0, len(viewpoint_indices) - 1)
         # 从 viewpoint_stack 中弹出索引为 rand_idx 的相机对象
@@ -126,10 +133,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
-        # 如果用随机的backgroun，就随机生成一个背景颜色，否则就使用前面的固定背景颜色
+        # 如果用随机的background，就随机生成一个背景颜色，否则就使用前面的固定背景颜色
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        print("SPARSE_ADAM_AVAILABLE: ", SPARSE_ADAM_AVAILABLE)
+        # print("SPARSE_ADAM_AVAILABLE: ", SPARSE_ADAM_AVAILABLE)
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -144,6 +151,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
         # L1损失
         Ll1 = l1_loss(image, gt_image)
+        if save_image:
+            save_tensor2image(image, f"/home/jiashi/images/image_{iteration}.png")
+            save_tensor2image(gt_image, f"/home/jiashi/images/image_{iteration}_gt.png")
+        # print(image)
+        # print(gt_image)
         # 加速版SSIM
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
@@ -299,6 +311,7 @@ if __name__ == "__main__":
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--save_image", type=bool, default = False)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -311,7 +324,7 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.save_image)
 
     # All done
     print("\nTraining complete.")

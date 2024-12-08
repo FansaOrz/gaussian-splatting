@@ -121,6 +121,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             rotations = rotations,
             cov3D_precomp = cov3D_precomp)
     else:
+        # N个点云点
+        print("means3D.shape: ", means3D.shape) # (N, 3)
+        print("means2D.shape: ", means2D.shape) # (N, 3)
+        print("shs.shape: ", shs.shape) # (N, (deg + 1)^2, 3) (N, 16, 3)
+        print("colors_precomp.shape: ", colors_precomp)
+        print("opacities.shape: ", opacity.shape) # (N, 1)
+        print("scales.shape: ", scales.shape) # (N, 3)
+        print("rotations.shape: ", rotations.shape) # (N, 4) 四元数
+        print("cov3D_precomp.shape: ", cov3D_precomp)
         rendered_image, radii, depth_image = rasterizer(
             means3D = means3D,
             means2D = means2D,
